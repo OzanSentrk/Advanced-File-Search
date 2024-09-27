@@ -13,6 +13,7 @@ from preprocessing import preprocess_text
 from docx import Document
 import pandas as pd
 from pptx import Presentation
+from scipy.sparse import csr_matrix
 
 # Initialize variables
 tfidf_vectorizer = TfidfVectorizer(stop_words=list(turkish_stopwords))
@@ -55,13 +56,16 @@ def read_excel(file_path):
         # Tüm sayfaları oku
         xls = pd.ExcelFile(file_path)
         for sheet_name in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name)
+            df = pd.read_excel(xls, sheet_name=sheet_name)
             # DataFrame'deki tüm hücreleri birleştir
             for column in df.columns:
-                text += ' '.join(df[column].astype(str).tolist()) + "\n"
+                column_data = ' '.join(df[column].astype(str).tolist())
+                text += column_data + "\n"
+                print(f"Sheet: {sheet_name}, Column: {column}, Data: {column_data}")
     except Exception as e:
         print(f"Excel dosyası okunamadı: {file_path}, hata: {e}")
     return text
+
 
 def read_powerpoint(file_path):
     print(f"PowerPoint dosyası okunuyor: {file_path}")
@@ -170,6 +174,7 @@ def load_index_and_filenames():
 # Function to check and process new files
 def check_and_process_new_files():
     global filenames, preprocessed_texts, tfidf_matrix
+    remove_deleted_files()
     # Get current files in the samples_folder
     current_files = set()
     for root, dirs, files in os.walk(samples_folder):
@@ -220,3 +225,55 @@ def check_and_process_new_files():
     else:
         print("Yeni dosya bulunamadı.")
 
+def remove_deleted_files():
+    global filenames, preprocessed_texts, tfidf_matrix
+    # Get current files in the samples_folder
+    current_files = set()
+    for root, dirs, files in os.walk(samples_folder):
+        for file in files:
+            current_files.add(file)
+    # Find deleted files
+    deleted_files = set(filenames) - current_files
+    if deleted_files:
+        print(f"Silinen dosyalar tespit edildi: {deleted_files}")
+        # Indeks ve veri yapılarından silinen dosyaları kaldır
+        indices_to_remove = [idx for idx, filename in enumerate(filenames) if filename in deleted_files]
+        # Indeksleri sıralamaya dikkat edin
+        indices_to_remove.sort()
+        print(f"Silinecek indeksler: {indices_to_remove}")
+        # FAISS indeksinden vektörleri kaldır
+        remove_vectors_from_index(indices_to_remove)
+        # filenames, preprocessed_texts ve tfidf_matrix'ten ilgili verileri kaldır
+        filenames = [filename for idx, filename in enumerate(filenames) if idx not in indices_to_remove]
+        preprocessed_texts = [text for idx, text in enumerate(preprocessed_texts) if idx not in indices_to_remove]
+        # TF-IDF matrisini güncelle
+        tfidf_matrix = delete_rows_csr(tfidf_matrix, indices_to_remove)
+        # Güncellenmiş verileri kaydet
+        save_index_and_filenames(filenames, preprocessed_texts)
+        print("Silinen dosyalar indeksten ve veri yapılarından kaldırıldı.")
+    else:
+        print("Silinen dosya bulunamadı.")
+def remove_vectors_from_index(indices_to_remove):
+    global index
+    # FAISS indeksinde kalan vektörleri al
+    total_vectors = index.ntotal
+    if total_vectors == 0:
+        return
+    remaining_indices = [i for i in range(total_vectors) if i not in indices_to_remove]
+    if remaining_indices:
+        # Kalan vektörleri al
+        remaining_vectors = index.reconstruct_n(0, total_vectors)
+        remaining_vectors = remaining_vectors[remaining_indices]
+        # Yeni bir indeks oluştur ve kalan vektörleri ekle
+        index = faiss.IndexFlatIP(dimension)
+        index.add(remaining_vectors)
+    else:
+        # Tüm vektörler silindiyse yeni boş bir indeks oluştur
+        index = faiss.IndexFlatIP(dimension)
+def delete_rows_csr(mat, indices):
+    if not isinstance(mat, csr_matrix):
+        raise ValueError("Only CSR format is supported")
+    indices = list(sorted(set(indices)))
+    mask = np.ones(mat.shape[0], dtype=bool)
+    mask[indices] = False
+    return mat[mask]
