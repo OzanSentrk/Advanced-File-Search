@@ -13,6 +13,12 @@ from preprocessing import preprocess_text
 from docx import Document
 import pandas as pd
 import pyexcel as p  
+from sklearn.exceptions import NotFittedError
+import numpy as np
+from model_selection import select_model, get_similarity_weights
+from tfidf_search import tfidf_search
+from sbert_search import sbert_search
+from combined_search import combined_search
 
 
 from pptx import Presentation
@@ -331,3 +337,47 @@ def delete_rows_csr(mat, indices):
     mask = np.ones(mat.shape[0], dtype=bool)
     mask[indices] = False
     return mat[mask]
+def search_query(query, top_k=5):
+    global index, tfidf_vectorizer, tfidf_matrix, filenames
+    print("Processing query...")
+    # Sorguyu ön işleyin
+    query_processed = preprocess_text(query)
+    print(f"Preprocessed query: {query_processed}")
+    # Sorgunun TF-IDF vektörünü oluşturun
+    try:
+        query_tfidf = tfidf_vectorizer.transform([query_processed])
+    except NotFittedError:
+        print("TF-IDF vectorizer is not fitted. Please vectorize documents first.")
+        return []
+    # Sorgunun SBERT vektörünü oluşturun
+    query_embedding = model.encode(query_processed, normalize_embeddings=True).astype('float32')
+    query_embedding = np.array([query_embedding])
+    # İndeksin boş olup olmadığını kontrol edin
+    if index.ntotal == 0:
+        print("FAISS index is empty. Please vectorize documents first.")
+        return []
+    # Kullanılacak modeli belirleyin
+    selected_model = select_model(query)
+    print(f"Selected model: {selected_model}")
+    if selected_model == 'tfidf':
+        from tfidf_search import tfidf_search
+        results = tfidf_search(query_tfidf, top_k, tfidf_matrix=tfidf_matrix, filenames=filenames)
+    elif selected_model == 'sbert':
+        from sbert_search import sbert_search
+        results = sbert_search(query_embedding, top_k, index=index, filenames=filenames)
+    else:
+        from combined_search import combined_search
+        from model_selection import get_similarity_weights  # Burada import ediyoruz
+        tfidf_weight, sbert_weight = get_similarity_weights(query)
+        results = combined_search(
+            query_tfidf,
+            query_embedding,
+            tfidf_weight,
+            sbert_weight,
+            top_k,
+            tfidf_matrix=tfidf_matrix,
+            index=index,
+            filenames=filenames
+        )
+    return results
+

@@ -11,6 +11,7 @@ from data_management import (
     vectorize_and_index_content,
     save_index_and_filenames,
     model,
+    search_query,
 )
 from preprocessing import preprocess_text
 from model_selection import select_model, get_similarity_weights
@@ -24,36 +25,6 @@ from constants import samples_folder
 def request_access():
     user_input = input(f"Type 'yes' to grant access to '{samples_folder}': ").strip().lower()
     return user_input == 'yes'
-
-def search_query(query, top_k=5):
-    print("Processing query...")
-    # Preprocess the query
-    query_processed = preprocess_text(query)
-    print(f"Preprocessed query: {query_processed}")
-    # Vectorize the query using TF-IDF
-    try:
-        query_tfidf = data_management.tfidf_vectorizer.transform([query_processed])
-    except NotFittedError:
-        print("TF-IDF vectorizer is not fitted. Please vectorize documents first.")
-        return
-    # Encode the query using SBERT
-    query_embedding = data_management.model.encode(query_processed, normalize_embeddings=True).astype('float32')
-    query_embedding = np.array([query_embedding])
-    # Check if index is empty
-    if data_management.index.ntotal == 0:
-        print("FAISS index is empty. Please vectorize documents first.")
-        return
-    # Determine which model to use
-    selected_model = select_model(query)
-    print(f"Selected model: {selected_model}")
-    if selected_model == 'tfidf':
-        tfidf_search(query_tfidf, top_k)
-    elif selected_model == 'sbert':
-        sbert_search(query_embedding, top_k)
-    else:
-        tfidf_weight, sbert_weight = get_similarity_weights(query)
-        combined_search(query_tfidf, query_embedding, tfidf_weight, sbert_weight, top_k)
-
 
 # main.py
 
@@ -72,7 +43,13 @@ if __name__ == "__main__":
             check_and_process_new_files()
         # Get user query and search
         query = input("What would you like to search for?: ").strip()
-        search_query(query, top_k=5)
+        results = search_query(query, top_k=5)
+        # Sonuçları konsola yazdırın
+        if results:
+            print("Arama Sonuçları:")
+            for filename, score in results:
+                print(f"Dosya: {filename}, Skor: {score}")
+        else:
+            print("Sonuç bulunamadı.")
     else:
         print("Access not granted, program terminated.")
-
