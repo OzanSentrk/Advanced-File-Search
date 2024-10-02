@@ -3,7 +3,6 @@
 import os
 from sklearn.exceptions import NotFittedError
 import numpy as np
-from constants import samples_folder
 import data_management  # Modülü import edin
 from data_management import (
     load_index_and_filenames,
@@ -18,6 +17,7 @@ from model_selection import select_model, get_similarity_weights
 from tfidf_search import tfidf_search
 from sbert_search import sbert_search
 from combined_search import combined_search
+from constants import samples_folder
 
 
 # Function to request access

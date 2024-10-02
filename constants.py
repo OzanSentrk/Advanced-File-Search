@@ -13,10 +13,10 @@ turkish_stopwords = set(stopwords.words('turkish'))
 
 # Paths
 # Update this path to your actual "sample" folder location
-samples_folder = "C:/Users/ozanu/OneDrive/Masaüstü/sample"
+samples_folder = r"C:\Users\ozanu\OneDrive\Masaüstü\sample"
 
 # Database directory
-db_directory = os.path.join(os.getcwd(), "Advanced File Search", "databases")
+db_directory = os.path.join(os.getcwd(), "Advanced-File-Search-main", "databases")
 
 # Create database directory if it doesn't exist
 if not os.path.exists(db_directory):

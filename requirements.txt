@@ -1,0 +1,14 @@
+numpy
+faiss-cpu
+pdfplumber
+sentence-transformers
+nltk
+tqdm
+scikit-learn
+python-docx
+pandas
+openpyxl
+python-pptx
+regex
+six
+pytz
