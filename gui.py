@@ -1,97 +1,665 @@
 # gui.py
 
 import sys
-from PyQt6.QtWidgets import QApplication, QWidget, QLabel, QLineEdit, QPushButton, QTextEdit, QVBoxLayout
-from PyQt6.QtCore import Qt
-from data_management import search_query
+import os
+import time
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QPushButton, QVBoxLayout,
+    QMessageBox, QListWidget, QHBoxLayout, QLabel, QFileDialog, QLineEdit, QTextEdit, QProgressBar,QListWidgetItem
+)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSettings
 from data_management import (
+    INDEX_BASE_DIR,
     load_index_and_filenames,
-    check_and_process_new_files,
-    get_file_contents,
-    vectorize_and_index_content,
-    save_index_and_filenames,
-    samples_folder
+    rescan_folder,
+    get_filenames,
+    add_manual_documents,
+    search_query,
+    reset_globals,
+    get_scanned_folder
+    
 )
 
-class SearchApp(QWidget):
+# WorkerThread sınıfı (İndeksleme işlemleri için)
+class WorkerThread(QThread):
+    finished = pyqtSignal(bool)  # İşlem tamamlandığında sinyal ve indeksleme yapılıp yapılmadığını bildirir
+    error = pyqtSignal(str)      # Hata durumunda sinyal
 
-    def __init__(self):
+    def __init__(self, folder):
         super().__init__()
-        self.setWindowTitle("Dosya Arama Uygulaması")
-        self.setGeometry(100, 100, 800, 600)
-        self.initUI()
+        self.folder = folder
 
-    def initUI(self):
-        # Ana dikey düzen
-        self.layout = QVBoxLayout()
+    def run(self):
+        try:
+            indexing_performed = load_index_and_filenames(self.folder)
+            self.finished.emit(indexing_performed)
+        except Exception as e:
+            self.error.emit(str(e))
 
-        # Arama etiketini ekleyelim
-        self.search_label = QLabel('Aranacak Kelime:')
-        self.layout.addWidget(self.search_label)
+# RescanThread sınıfı (Yeniden tarama işlemleri için)
+class RescanThread(QThread):
+    finished = pyqtSignal()     # İşlem tamamlandığında sinyal
+    error = pyqtSignal(str)     # Hata durumunda sinyal
 
-        # Arama metin girişini ekleyelim
+    def __init__(self, folder):
+        super().__init__()
+        self.folder = folder
+
+    def run(self):
+        try:
+            rescan_folder(self.folder)
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+
+# LoadingWindow sınıfı
+class LoadingWindow(QMainWindow):
+    loading_finished_signal = pyqtSignal(bool)  # Loading tamamlandığında MainApp'a sinyal gönderir (indeksleme yapıldı mı?)
+    loading_error_signal = pyqtSignal(str)      # Hata durumunda MainApp'a sinyal gönderir
+
+    def __init__(self, folder):
+        super().__init__()
+        self.folder = folder
+        self.init_ui()
+
+    def init_ui(self):
+        # Ana widget oluştur
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        # Ana layout oluştur
+        layout = QVBoxLayout()
+
+        # Yükleme mesajı
+        self.loading_label = QLabel("Belgeler taranıyor ve indeksleniyor...")
+        self.loading_label.setAlignment(Qt.AlignCenter)
+
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setMaximum(0)  # Belirsiz progress bar
+
+        # Layout'a widget'ları ekleyin
+        layout.addWidget(self.loading_label)
+        layout.addWidget(self.progress_bar)
+
+        # Ana widget'a layout'u ayarlayın
+        central_widget.setLayout(layout)
+
+        # Pencere başlığını ve boyutunu ayarlayın
+        self.setWindowTitle("Yükleniyor")
+        self.resize(400, 200)
+
+        # Worker thread başlat
+        self.worker_thread = WorkerThread(self.folder)
+        self.worker_thread.finished.connect(self.loading_finished)
+        self.worker_thread.error.connect(self.loading_error)
+        self.worker_thread.start()
+
+    def loading_finished(self, indexing_performed):
+        if indexing_performed:
+            QMessageBox.information(self, "Bilgi", "Belgeler tarandı ve indekslendi.")
+        else:
+            QMessageBox.information(self, "Bilgi", "Belgeler yüklendi.")
+        self.loading_finished_signal.emit(indexing_performed)
+        self.close()
+
+    def loading_error(self, error_message):
+        QMessageBox.critical(self, "Hata", f"İndeksleme sırasında bir hata oluştu: {error_message}")
+        self.loading_error_signal.emit(error_message)
+        self.close()
+
+# DocumentsWindow sınıfı
+class DocumentsWindow(QMainWindow):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.selected_folder = parent.selected_folder
+        self.init_ui()
+        self.check_index()
+
+    def init_ui(self):
+        # Ana widget oluştur
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+
+        # Ana layout oluştur
+        self.main_layout = QVBoxLayout()
+
+        # Ana Sayfa butonu
+        self.home_button = QPushButton("Ana Sayfa")
+        self.home_button.clicked.connect(self.go_home)
+
+        # Seçili klasörü gösteren label
+        self.selected_folder_label = QLabel(f"Seçili Klasör: {self.selected_folder}")
+        self.selected_folder_label.setAlignment(Qt.AlignCenter)
+
+        # Belgeleri listelemek için QListWidget
+        self.documents_list = QListWidget()
+        self.load_documents()
+
+        # Belge ekle butonu
+        self.add_document_button = QPushButton("Belge Ekle")
+        self.add_document_button.clicked.connect(self.add_document)
+
+        # Yeniden Tara butonu
+        self.rescan_button = QPushButton("Yeniden Tara")
+        self.rescan_button.clicked.connect(self.rescan_folder)
+
+        # Butonları içeren layout
+        self.buttons_layout = QHBoxLayout()
+        self.buttons_layout.addWidget(self.add_document_button)
+        self.buttons_layout.addWidget(self.rescan_button)
+
+        # Layout'a widget'ları ekleyin
+        self.main_layout.addWidget(self.home_button)
+        self.main_layout.addWidget(self.selected_folder_label)
+        self.main_layout.addLayout(self.buttons_layout)
+        self.main_layout.addWidget(self.documents_list)
+
+        # Ana widget'a layout'u ayarlayın
+        self.central_widget.setLayout(self.main_layout)
+
+        # Pencere başlığını ve boyutunu ayarlayın
+        self.setWindowTitle("Hedef Klasördeki Belgeler")
+        self.resize(600, 400)
+
+    def check_index(self):
+        # İndekslerin mevcut olup olmadığını kontrol edin
+        folder_name = os.path.basename(os.path.normpath(self.selected_folder))
+        db_directory = INDEX_BASE_DIR / folder_name
+        if not db_directory.exists():
+            # İndeksler silinmişse
+            self.selected_folder_label.setText("Bir Dosya Yolu Seçilmemiştir. Lütfen Bir Dosya Yolu Seçiniz.")
+            self.add_document_button.setEnabled(False)
+            self.rescan_button.setEnabled(False)
+            self.load_documents()  # Boş listeyi göster
+        else:
+            # İndeksler mevcutsa
+            self.selected_folder_label.setText(f"Seçili Klasör: {self.selected_folder}")
+            self.add_document_button.setEnabled(True)
+            self.rescan_button.setEnabled(True)
+            self.load_documents()
+
+    def load_documents(self):
+        try:
+            folder_name = os.path.basename(os.path.normpath(self.selected_folder)) 
+            db_directory = INDEX_BASE_DIR / folder_name
+            if not db_directory.exists():
+                QMessageBox.warning(self, "Uyarı", "İndeks dizini bulunamadı. Lütfen yeniden tarama yapın.")
+                self.documents_list.clear()
+                return
+            # Taranmış belgelerin isimlerini yükleyin
+            self.documents_list.clear()
+            current_filenames = get_filenames()
+            print(f"Güncel dosya isimleri: {current_filenames}")  # Debug: Konsola dosya isimlerini yazdır
+            if not current_filenames:
+                self.documents_list.addItem("Bu klasörde belge bulunamadı veya indeksler silinmiş.")
+            for filename in current_filenames:
+                item = QListWidgetItem()
+                widget = QWidget()
+                layout = QHBoxLayout()
+                # Dosya adı label'ı
+                label = QLabel(filename)
+                # Dosyayı Aç butonu
+                open_button = QPushButton("Dosyayı Aç")
+                open_button.clicked.connect(lambda checked, f=filename: self.open_file(f))
+                # Layout ayarları
+                layout.addWidget(label)
+                layout.addStretch()
+                layout.addWidget(open_button)
+                layout.setContentsMargins(5, 0, 5, 0)
+                widget.setLayout(layout)
+                self.documents_list.addItem(item)
+                self.documents_list.setItemWidget(item, widget)
+        except Exception as e:
+            QMessageBox.critical(self, "Hata", f"Belgeler yüklenirken bir hata oluştu: {e}")
+            print(f"load_documents sırasında hata: {e}")  # Konsola hatayı yazdır
+
+    def open_file(self, filename):
+        file_path = os.path.join(self.selected_folder, filename)
+        if os.path.exists(file_path):
+            try:
+                if sys.platform == "win32":
+                    os.startfile(file_path)
+                elif sys.platform == "darwin":
+                    os.system("open " + file_path)
+                else:
+                    subprocess.Popen(["xdg-open", file_path])
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"Dosya açılırken bir hata oluştu: {e}")
+        else:
+            QMessageBox.warning(self, "Uyarı", "Dosya mevcut değil veya taşınmış.")
+    def add_document(self):
+        # Belge ekleme işlevselliği
+        file_dialog = QFileDialog()
+        file_dialog.setFileMode(QFileDialog.ExistingFiles)
+        file_paths, _ = file_dialog.getOpenFileNames(self, "Belgeleri Seç")
+        if file_paths:
+            add_manual_documents(file_paths, self.selected_folder)
+            self.load_documents()
+            QMessageBox.information(self, "Bilgi", "Belgeler eklendi ve indeks güncellendi.")
+        else:
+            QMessageBox.warning(self, "Uyarı", "Belge seçilmedi.")
+
+    def rescan_folder(self):
+        # "Yeniden Tara" butonuna tıklanınca çalışacak fonksiyon
+        self.rescan_button.setEnabled(False)  # Butonu devre dışı bırak
+        self.rescan_button.setText("Taranıyor...")
+
+        self.rescan_thread = RescanThread(self.selected_folder)
+        self.rescan_thread.finished.connect(self.on_rescan_finished)
+        self.rescan_thread.error.connect(self.on_rescan_error)
+        self.rescan_thread.start()
+
+    def on_rescan_finished(self):
+        # Rescan işlemi tamamlandığında çağrılır
+        self.load_documents()  # Dosya listesini yeniden yükle
+        QMessageBox.information(self, "Bilgi", "Klasör başarıyla yeniden tarandı ve indeks güncellendi.")
+        self.rescan_button.setEnabled(True)  # Butonu tekrar etkinleştir
+        self.rescan_button.setText("Yeniden Tara")
+
+    def on_rescan_error(self, error_message):
+        QMessageBox.critical(self, "Hata", f"Yeniden tarama sırasında bir hata oluştu: {error_message}")
+        self.rescan_button.setEnabled(True)  # Butonu tekrar etkinleştir
+        self.rescan_button.setText("Yeniden Tara")
+
+    def go_home(self):
+        self.parent().show()
+        self.close()
+
+# SearchApp sınıfı
+class SearchApp(QMainWindow):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.selected_folder = parent.selected_folder
+        self.init_ui()
+        self.check_index()
+
+    def init_ui(self):
+        # Ana widget oluştur
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+
+        # Ana layout oluştur
+        self.main_layout = QVBoxLayout()
+
+        # Ana Sayfa butonu
+        self.home_button = QPushButton("Ana Sayfa")
+        self.home_button.clicked.connect(self.go_home)
+
+        # Seçili klasörü gösteren label
+        self.selected_folder_label = QLabel()
+        self.selected_folder_label.setAlignment(Qt.AlignCenter)
+
+        # Arama kutusu ve butonları
         self.search_input = QLineEdit()
-        self.layout.addWidget(self.search_input)
-
-        # Arama butonunu ekleyelim
-        self.search_button = QPushButton('Ara')
+        self.search_input.setPlaceholderText("Arama sorgunuzu girin")
+        self.search_button = QPushButton("Ara")
         self.search_button.clicked.connect(self.search_files)
-        self.layout.addWidget(self.search_button)
 
-        # Sonuçları göstermek için metin alanı
-        self.result_area = QTextEdit()
-        self.result_area.setReadOnly(True)
-        self.layout.addWidget(self.result_area)
+        self.top_k_input = QLineEdit()
+        self.top_k_input.setPlaceholderText("Sonuç sayısı (Varsayılan Değer : 8)")
+        self.top_k_input.setFixedWidth(150)
 
-        # Layout'u ayarla
-        self.setLayout(self.layout)
+        # Arama kutusu ve butonları için bir layout oluşturun
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(self.search_input)
+        search_layout.addWidget(self.top_k_input)
+        search_layout.addWidget(self.search_button)
+
+        # Sonuç alanını oluşturun
+        self.result_list = QListWidget()
+
+        # Layout'lara widget'ları ekleyin
+        self.main_layout.addWidget(self.home_button)
+        self.main_layout.addWidget(self.selected_folder_label)
+        self.main_layout.addLayout(search_layout)
+        self.main_layout.addWidget(self.result_list)
+
+        # Ana widget'a layout'u ayarlayın
+        self.central_widget.setLayout(self.main_layout)
+
+        # Pencere başlığını ve boyutunu ayarlayın
+        self.setWindowTitle("Arama Yap")
+        self.resize(800, 600)
+
+    def check_index(self):
+        folder_name = os.path.basename(os.path.normpath(self.selected_folder)) 
+        db_directory = INDEX_BASE_DIR / folder_name
+        if not db_directory.exists():
+            self.selected_folder_label.setText(f"Seçili Klasör: {self.selected_folder} (İndeks bulunamadı).Lütfen yeniden tarama yapın.")
+            self.search_button.setEnabled(False)
+        else:
+            self.selected_folder_label.setText(f"Seçili Klasör: {self.selected_folder}")
+            self.search_button.setEnabled(True)
+    def perform_search(self, query):
+        folder_name = os.path.basename(os.path.normpath(self.selected_folder)) 
+        db_directory = INDEX_BASE_DIR / folder_name
+        if not db_directory.exists():
+            QMessageBox.warning(self, "Uyarı", "İndeks dizini bulunamadı. Lütfen yeniden tarama yapın.")
+            return [], 0.0
+        top_k_text = self.top_k_input.text()
+        if top_k_text.isdigit():
+            top_k = int(top_k_text)
+        else:
+            top_k = 8
+
+        results, elapsed_time = search_query(query, top_k=top_k)
+        return results, elapsed_time
 
     def search_files(self):
         query = self.search_input.text()
         if not query:
-            self.result_area.setText("Lütfen arama terimini girin.")
+            QMessageBox.warning(self, "Uyarı", "Lütfen bir arama sorgusu girin.")
             return
+        self.statusBar().showMessage("Arama yapılıyor...")
+        QApplication.processEvents()
 
-        # Arama işlemi sırasında arayüzün donmaması için
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            results = self.perform_search(query)
-            if results:
-                self.display_results(results)
-            else:
-                self.result_area.setText("Sonuç bulunamadı.")
-        finally:
-            QApplication.restoreOverrideCursor()
+        results, elapsed_time = self.perform_search(query)
 
-    def perform_search(self, query):
-        # search_query fonksiyonunu çağırıyoruz
-        top_k = 10  # Gösterilecek sonuç sayısı
-        results = search_query(query, top_k=top_k)
-        return results
+        self.display_results(results)
+        self.statusBar().showMessage("Arama tamamlandı.")
+
+        # Arama süresini konsola yazdır
+        print(f"Arama süresi: {elapsed_time:.4f} saniye")
 
     def display_results(self, results):
-        self.result_area.clear()
+        self.result_list.clear()
+
+        if not results:
+            item = QListWidgetItem("Sonuç bulunamadı.")
+            self.result_list.addItem(item)
+            return
+
         for filename, score in results:
-            self.result_area.append(f"Dosya: {filename}, Skor: {score:.4f}")
+            item = QListWidgetItem()
+            widget = QWidget()
+            layout = QHBoxLayout()
+            # Dosya adı ve skor
+            label = QLabel(f"Dosya: {filename}, Skor: {score:.4f}")
+            # Dosyayı Aç butonu
+            open_button = QPushButton("Dosyayı Aç")
+            open_button.clicked.connect(lambda checked, f=filename: self.open_file(f))
+            # Layout ayarları
+            layout.addWidget(label)
+            layout.addStretch()
+            layout.addWidget(open_button)
+            layout.setContentsMargins(5, 0, 5, 0)
+            widget.setLayout(layout)
+            self.result_list.addItem(item)  # Boşluk eklemek için
+            self.result_list.setItemWidget(item, widget)
+    def open_file(self, filename):
+        file_path = os.path.join(self.selected_folder, filename)
+        if os.path.exists(file_path):
+            try:
+                if sys.platform == "win32":
+                    os.startfile(file_path)
+                elif sys.platform == "darwin":
+                    subprocess.Popen(["open", file_path])
+                else:
+                    subprocess.Popen(["xdg-open", file_path])
+            except Exception as e:
+                QMessageBox.critical(self, "Hata", f"Dosya açılamadı: {e}")
 
-# Burada initialize_data fonksiyonunu tanımlıyoruz
-def initialize_data():
-    # Verileri başlatma işlemleri
-    if load_index_and_filenames():
-        print("Veriler yüklendi.")
-        # Yeni dosyaları kontrol edin
-        check_and_process_new_files()
-    else:
-        print("Veriler yüklenemedi, dosyalar taranıyor ve vektörleştiriliyor...")
-        # Dosyaları işle ve vektörleştir
-        preprocessed_texts, filenames = get_file_contents(samples_folder)
-        tfidf_matrix = vectorize_and_index_content(preprocessed_texts)
-        save_index_and_filenames(filenames, preprocessed_texts)
+        else:
+            QMessageBox.warning(self, "Uyarı", "Dosya mevcut değil veya taşınmış.")
+    def go_home(self):
+        self.parent().show()
+        self.close()
+class ScannedFoldersWindow(QMainWindow):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.init_ui()
 
-if __name__ == '__main__':
-    initialize_data()
+    def init_ui(self):
+        # Ana widget ve layout oluştur
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.main_layout = QVBoxLayout()
 
+        # Ana Sayfa butonu
+        self.home_button = QPushButton("Ana Sayfa")
+        self.home_button.clicked.connect(self.go_home)
+
+        # Taranmış klasörleri listelemek için QListWidget
+        self.folders_list = QListWidget()
+        self.load_scanned_folders()
+
+        # Sil butonu
+        self.delete_button = QPushButton("Seçili Klasörü Sil")
+        self.delete_button.clicked.connect(self.delete_selected_folder)
+
+        # Layout'a widget'ları ekleyin
+        self.main_layout.addWidget(self.home_button)
+        self.main_layout.addWidget(self.folders_list)
+        self.main_layout.addWidget(self.delete_button)
+
+        self.central_widget.setLayout(self.main_layout)
+
+        # Pencere başlığı ve boyutu
+        self.setWindowTitle("Taranmış Klasörler")
+        self.resize(600, 400)
+
+    def load_scanned_folders(self):
+        # Taranmış klasörleri yükleyin
+        self.folders_list.clear()
+        self.scanned_folders = get_scanned_folder()  # Fonksiyonu kullanıyoruz
+        for folder_info in self.scanned_folders:
+            folder_path = folder_info['path']
+            index_size = folder_info['size']
+            if folder_path:
+                item_text = f"Klasör: {folder_path}, Boyut: {index_size / (1024*1024):.2f} MB"
+            else:
+                item_text = f"Klasör: {folder_info['name']}, Bilgi mevcut değil"
+            self.folders_list.addItem(item_text)
+
+    def delete_selected_folder(self):
+        selected_items = self.folders_list.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "Uyarı", "Lütfen silmek istediğiniz klasörü seçin.")
+            return
+        for item in selected_items:
+            row = self.folders_list.row(item)
+            folder_info = self.scanned_folders[row]
+            # İndeks dosyalarını silin
+            folder_name = folder_info['name']
+            db_directory = INDEX_BASE_DIR / folder_name
+            if db_directory.exists():
+                for file in db_directory.glob('*'):
+                    file.unlink()
+                db_directory.rmdir()
+                print(f"İndeks dosyaları silindi: {db_directory}")
+            else:
+                print(f"İndeks dizini bulunamadı: {db_directory}")
+            # Listeden kaldırın
+            self.folders_list.takeItem(row)
+            # İlgili klasörü scanned_folders listesinden kaldırın
+            self.scanned_folders.pop(row)
+            QMessageBox.information(self, "Bilgi", "Seçili klasör ve indeksleri silindi.")
+            self.parent().on_index_deleted(folder_name)
+
+    def go_home(self):
+        self.parent().show()
+        self.close()
+
+
+          
+# MainApp sınıfı
+class MainApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.selected_folder = None  
+        self.index_loaded = False
+        self.init_ui()
+        self.prompt_folder_selection()
+        self.setStyleSheet('''
+            QMainWindow {
+                background-color: lightblue;
+            }
+            QPushButton {
+                color:black;
+                background-color: #f7edf2;
+                padding:15px;
+                margin-bottom:5px;
+                border-radius:15px;
+                font-family:Arial;
+                font-size:15px;
+                font-weight:bold;
+
+            }
+            
+            QPushButton#search_button{
+                background-color: qlineargradient(spread:pad, x1:0.188, y1:0.489, x2:0.801136, y2:0.494455, stop:0 rgba(107, 206, 36, 255), stop:1 rgba(7, 102, 188, 255));
+            }
+           QPushButton#search_button:hover {
+                background-color: qlineargradient(spread:pad, x1:0.801136, y1:0.494455, x2:0.188, y2:0.489, 
+                stop:0 rgba(7, 102, 188, 255), 
+                stop:1 rgba(107, 206, 36, 255));
+                cursor: pointer; 
+            }
+            ''')
+
+    def init_ui(self):
+        # Ana widget oluştur
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        # Ana layout oluştur
+        main_layout = QVBoxLayout()
+
+        # Arama yap butonu
+        self.search_button = QPushButton("Arama Yap")
+        self.search_button.clicked.connect(self.open_search_window)
+        self.search_button.setObjectName("search_button")
+        self.search_button.setEnabled(False)  # Başlangıçta devre dışı
+
+        # Hedef klasörü değiştirme butonu
+        self.change_folder_button = QPushButton("Hedef Klasörü Seç")
+        self.change_folder_button.clicked.connect(self.change_target_folder)
+
+        # Hedef klasördeki belgeleri görüntüleme butonu
+        self.view_documents_button = QPushButton("Hedef Klasördeki Belgeler")
+        self.view_documents_button.clicked.connect(self.view_documents)
+        self.view_documents_button.setEnabled(False)  # Başlangıçta devre dışı
+
+        # Taranmış Klasörler butonu
+        self.view_scanned_folders_button = QPushButton("Taranmış Klasörler")
+        self.view_scanned_folders_button.clicked.connect(self.open_scanned_folders_window)
+
+        # Butonları layout'a ekleyin
+        main_layout.addWidget(self.search_button)
+        main_layout.addWidget(self.change_folder_button)
+        main_layout.addWidget(self.view_documents_button)
+        main_layout.addWidget(self.view_scanned_folders_button)
+
+        # Ana widget'a layout'u ayarlayın
+        central_widget.setLayout(main_layout)
+
+        # Pencere başlığını ve boyutunu ayarlayın
+        self.setWindowTitle("Gelişmiş Dosya Arama")
+        self.resize(400, 300)
+
+    def prompt_folder_selection(self):
+        # Kullanıcıya mesaj kutusu göster
+        QMessageBox.information(self, "Klasör Seçimi", "Lütfen çalışmak istediğiniz diski veya klasörü seçiniz.")
+
+        # Kullanıcıdan klasör seçmesini isteyin
+        folder = QFileDialog.getExistingDirectory(self, "Hedef Klasörü Seç")
+        if folder:
+            self.selected_folder = folder
+            # Seçilen klasörü QSettings'e kaydedin
+            settings = QSettings("AdvancedFileSearch", "App")
+            settings.setValue("last_selected_folder", self.selected_folder)
+            QMessageBox.information(self, "Bilgi", f"Hedef klasör seçildi: {self.selected_folder}")
+            print(f"Yeni hedef klasör seçildi: {self.selected_folder}")  # Debug Mesajı
+            # İndeksleme işlemini başlat
+            self.start_indexing()
+        else:
+            QMessageBox.warning(self, "Uyarı", "Hedef klasör seçilmedi.")
+            print("Hedef klasör seçilmedi.")  # Debug Mesajı
+
+
+
+    def open_scanned_folders_window(self):
+        self.scanned_folders_window = ScannedFoldersWindow(self)
+        self.scanned_folders_window.show()
+        self.hide()
+
+
+
+    def start_indexing(self):
+        # İndeksleme işlemini başlatmak için LoadingWindow'u açın
+        self.loading_window = LoadingWindow(self.selected_folder)
+        self.loading_window.loading_finished_signal.connect(self.on_loading_finished)
+        self.loading_window.loading_error_signal.connect(self.on_loading_error)
+        self.loading_window.show()
+        self.hide()
+
+    def on_loading_finished(self, indexing_performed):
+        # Loading tamamlandığında butonları etkinleştir
+        self.index_loaded = True
+        self.search_button.setEnabled(True)
+        self.view_documents_button.setEnabled(True)
+        self.show()
+
+    def on_loading_error(self, error_message):
+        # Hata durumunda butonları devre dışı bırak
+        self.index_loaded = False
+        QMessageBox.critical(self, "Hata", f"İndeksleme sırasında bir hata oluştu: {error_message}")
+        self.search_button.setEnabled(False)
+        self.view_documents_button.setEnabled(False)
+        self.show()
+
+    def change_target_folder(self):
+        # Kullanıcı yeni bir klasör seçmek istediğinde çalışacak fonksiyon
+        folder = QFileDialog.getExistingDirectory(self, "Hedef Klasörü Seç")
+        if folder:
+            # Mevcut indeksleme işlemini durdurun
+            if hasattr(self, 'loading_window') and self.loading_window.worker_thread.isRunning():
+                self.loading_window.worker_thread.terminate()
+                self.loading_window.worker_thread.wait()
+                reset_globals()
+            self.selected_folder = folder
+            # Seçilen klasörü QSettings'e kaydedin
+            settings = QSettings("AdvancedFileSearch", "App")
+            settings.setValue("last_selected_folder", self.selected_folder)
+            QMessageBox.information(self, "Bilgi", f"Hedef klasör değiştirildi: {self.selected_folder}")
+            print(f"Yeni hedef klasör seçildi: {self.selected_folder}")  # Debug Mesajı
+            reset_globals()
+            self.index_loaded = False
+            # İndeksleme işlemini başlat
+            self.start_indexing()
+        else:
+            QMessageBox.warning(self, "Uyarı", "Hedef klasör seçilmedi.")
+            print("Hedef klasör seçilmedi.")  # Debug Mesajı
+
+    def open_search_window(self):
+        self.search_window = SearchApp(self)
+        self.search_window.show()
+        self.hide()
+
+    def view_documents(self):
+        if not self.selected_folder:
+            QMessageBox.warning(self, "Uyarı", "Lütfen önce bir klasör seçin.")
+            return
+        self.documents_window = DocumentsWindow(self)
+        self.documents_window.show()
+        self.hide()
+    def on_index_deleted(self, folder_name):
+        selected_folder_name = os.path.basename(os.path.normpath(self.selected_folder)),
+        if folder_name == selected_folder_name:
+            QMessageBox.information(self, "Bilgi", "Seçili klasörün indeksi silindi. Lütfen yeni bir klasör seçin.")
+            self.search_button.setEnabled(False)
+            self.view_documents_button.setEnabled(False)
+            self.index_loaded = False
+            reset_globals()
+        else:
+            pass
+
+
+# main bloğu
+if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = SearchApp()
+    window = MainApp()
     window.show()
-    sys.exit(app.exec())
+    sys.exit(app.exec_())

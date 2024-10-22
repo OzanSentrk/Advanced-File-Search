@@ -5,48 +5,42 @@ import pickle
 import pdfplumber
 import faiss
 import numpy as np
-from tqdm import tqdm
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sentence_transformers import SentenceTransformer
-from constants import db_directory, samples_folder, dimension,turkish_stopwords
+from constants import db_directory, turkish_stopwords
 from preprocessing import preprocess_text
 from docx import Document
 import pandas as pd
-import pyexcel as p  
-from sklearn.exceptions import NotFittedError
-import numpy as np
-from model_selection import select_model, get_similarity_weights
-from tfidf_search import tfidf_search
-from sbert_search import sbert_search
-from combined_search import combined_search
-
-
 from pptx import Presentation
-from scipy.sparse import csr_matrix
-
-# Initialize variables
-tfidf_vectorizer = TfidfVectorizer(stop_words=list(turkish_stopwords))
-model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-mpnet-base-v2')
-print("Model loaded successfully.")
-index = None  # Will be initialized later
+import time
+from pathlib import Path
+# Global değişkenler
 filenames = []
-tfidf_matrix = None
+filename_to_id = {}  # Dosya isimlerine karşılık gelen ID'ler
 preprocessed_texts = []
+tfidf_vectorizer = None
+tfidf_matrix = None
+index = None  # FAISS indeksi
+dimension = None  # Vektör boyutu
 
-# Function to read PDF files
+# Windows'ta AppData/Local dizinini alın
+INDEX_BASE_DIR = Path.home() / '.afs_indices'
+
+# PDF dosyalarını okuma fonksiyonu
 def read_pdf(file_path):
-    print(f"Reading PDF file: {file_path}")
+    print(f"PDF dosyası okunuyor: {file_path}")
     text = ""
     try:
         with pdfplumber.open(file_path) as pdf:
             for page in pdf.pages:
                 page_text = page.extract_text()
                 if page_text:
-                    text += page_text
+                    text += page_text + "\n"
     except Exception as e:
-        print(f"Could not read PDF file: {file_path}, error: {e}")
+        print(f"PDF dosyası okunamadı: {file_path}, hata: {e}")
     return text
 
+# Word dosyalarını okuma fonksiyonu
 def read_word(file_path):
     print(f"Word dosyası okunuyor: {file_path}")
     text = ""
@@ -58,40 +52,22 @@ def read_word(file_path):
         print(f"Word dosyası okunamadı: {file_path}, hata: {e}")
     return text
 
+# Excel dosyalarını okuma fonksiyonu
 def read_excel(file_path):
     print(f"Excel dosyası okunuyor: {file_path}")
     text = ""
     try:
-        # Tüm sayfaları oku
         xls = pd.ExcelFile(file_path)
         for sheet_name in xls.sheet_names:
             df = pd.read_excel(file_path, sheet_name=sheet_name)
-            
             for column in df.columns:
                 column_data = ' '.join(df[column].astype(str).tolist())
                 text += column_data + "\n"
-
     except Exception as e:
         print(f"Excel dosyası okunamadı: {file_path}, hata: {e}")
     return text
 
-def read_excel_with_pyexcel(file_path):
-    print(f"Excel dosyası (pyexcel ile) okunuyor: {file_path}")
-    text = ""
-    try:
-        records = p.get_records(file_name=file_path)
-        for record in records:
-            for key, value in record.items():
-                text += f"{value} "
-            text += "\n"
-        
-    except Exception as e:
-        print(f"Excel dosyası okunamadı: {file_path}, hata: {e}")
-    return text
-
-
-
-
+# PowerPoint dosyalarını okuma fonksiyonu
 def read_powerpoint(file_path):
     print(f"PowerPoint dosyası okunuyor: {file_path}")
     text = ""
@@ -105,13 +81,28 @@ def read_powerpoint(file_path):
         print(f"PowerPoint dosyası okunamadı: {file_path}, hata: {e}")
     return text
 
+# FAISS indeksini IDMap ile oluşturma fonksiyonu
+def create_faiss_index(dimension):
+    # IndexFlatIP ile bir indeks oluşturun
+    flat_index = faiss.IndexFlatIP(dimension)
+    # IDMap2 ile indeksinizi sarmalayın
+    id_map = faiss.IndexIDMap2(flat_index)
+    return id_map
 
-# Function to get file contents
+# Dosyaların içeriğini alma fonksiyonu
 def get_file_contents(folder):
     print(f"'{folder}' klasörü taranıyor...")
     files_content = []
-    filenames = []
+    filenames_local = []
+
+    # Hedef klasörün adını güvenli bir şekilde alalım
+    folder_name = os.path.basename(os.path.normpath(folder))
+    # İndeks dosyalarının saklandığı dizini belirleyin
+    db_directory = INDEX_BASE_DIR / folder_name
+
     for root, dirs, files in os.walk(folder):
+        # İndeks dizinini atlayın
+        dirs[:] = [d for d in dirs if os.path.join(root, d) != str(db_directory)]
         for file in files:
             file_path = os.path.join(root, file)
             print(f"Dosya işleniyor: {file_path}")
@@ -122,262 +113,438 @@ def get_file_contents(folder):
                         content_raw = f.read()
                         print(f"Metin dosyası okundu: {file_path}")
                 except Exception as e:
-                    print(f"Metin dosyası okunamadı: {file_path}, hata: {e}")
+                        print(f"Metin dosyası okunamadı: {file_path}, hata: {e}")
             elif file.lower().endswith('.pdf'):
-                content_raw = read_pdf(file_path)
+                    content_raw = read_pdf(file_path)
             elif file.lower().endswith(('.docx', '.doc')):
-                content_raw = read_word(file_path)
-            elif file.lower().endswith('.xlsx'):
-                content_raw = read_excel(file_path)
-            elif file.lower().endswith('.xls'):
-                content_raw = read_excel_with_pyexcel(file_path)
-            elif file.lower().endswith('.pptx'):
-                content_raw = read_powerpoint(file_path)
+                    content_raw = read_word(file_path)
+            elif file.lower().endswith(('.xlsx', '.xls')):
+                    content_raw = read_excel(file_path)
+            elif file.lower().endswith(('.pptx', '.ppt')):
+                    content_raw = read_powerpoint(file_path)
             else:
-                print(f"Desteklenmeyen dosya türü: {file_path}")
-                continue  # Desteklenmeyen dosyaları atla
-            # Metin ön işlemesi
+                    print(f"Desteklenmeyen dosya türü: {file_path}")
+                    continue  # Desteklenmeyen dosyaları atla
+                # Metin ön işlemesi
             content = preprocess_text(content_raw)
             if content:
-                files_content.append(content)
-                filenames.append(file)
-    print(f"Taranan dosya sayısı: {len(filenames)}")
-    return files_content, filenames
+                    files_content.append(content)
+                    # Dosya yolunu hedef klasöre göre göreceli hale getirin
+                    file_rel_path = os.path.relpath(file_path, folder)
+                    filenames_local.append(file_rel_path)
+    print(f"Taranan dosya sayısı: {len(filenames_local)}")
+    return files_content, filenames_local
 
 
-# Function to vectorize content and build index
+# Vektörleştirme ve indeksleme fonksiyonu
 def vectorize_and_index_content(contents):
-    global index, tfidf_vectorizer, tfidf_matrix
-    # Initialize FAISS index
-    index = faiss.IndexFlatIP(dimension)
-    print("Dosyalar vektörleştiriliyor ve FAISS index'e ekleniyor (SBERT ve TF-IDF ile)...")
-    # TF-IDF vectorization
+    global index, tfidf_vectorizer, tfidf_matrix, dimension, filenames, preprocessed_texts, filename_to_id
+    print("Dosyalar vektörleştiriliyor ve FAISS indeksine ekleniyor (TF-IDF ile)...")
+    
+    # TF-IDF vektörleştirme
+    tfidf_vectorizer = TfidfVectorizer(stop_words=list(turkish_stopwords))
     tfidf_matrix = tfidf_vectorizer.fit_transform(contents)
     print(f"TF-IDF matrisinin boyutu: {tfidf_matrix.shape}")
-    # SBERT embeddings
-    embeddings = []
-    with tqdm(total=len(contents)) as pbar:
-        for content in contents:
-            embedding = model.encode(content, normalize_embeddings=True).astype('float32')
-            embeddings.append(embedding)
-            pbar.update(1)
-    embeddings_array = np.array(embeddings)
-    index.add(embeddings_array)
+    
+    # TF-IDF matrisini yoğunlaştırma ve float32 tipine dönüştürme
+    tfidf_matrix_dense = tfidf_matrix.toarray().astype('float32')
+    faiss.normalize_L2(tfidf_matrix_dense)
+    
+    # Embedding boyutunu belirle
+    dimension = tfidf_matrix_dense.shape[1]
+    
+    # FAISS indeksini IDMap ile oluştur
+    index = create_faiss_index(dimension)
+    
+    # FAISS indeksine ekle
+    # ID'ler için mevcut filename_to_id'den maksimum ID'yi bul ve artan ID'ler ata
+    if filename_to_id:
+        max_id = max(filename_to_id.values())
+    else:
+        max_id = -1  # İlk ID 0 olacak şekilde başlat
+    
+    ids = np.arange(max_id + 1, max_id + 1 + len(filenames)).astype('int64')
+    index.add_with_ids(tfidf_matrix_dense, ids)
+    
+    # filename_to_id'yi güncelle
+    for filename, id_ in zip(filenames, ids):
+        filename_to_id[filename] = id_
+    
     print(f"FAISS indeksindeki toplam vektör sayısı: {index.ntotal}")
-    print("Vektörleştirme tamamlandı ve FAISS index'e eklendi.")
+    print("Vektörleştirme tamamlandı ve FAISS indeksine eklendi.")
+    
     return tfidf_matrix
 
-def get_readable_file_size(size_in_bytes):
-    # Byte boyutunu uygun birimlere dönüştürür
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if size_in_bytes < 1024:
-            return f"{size_in_bytes:.2f} {unit}"
-        size_in_bytes /= 1024
+# İndeksi ve dosya isimlerini kaydetme fonksiyonu
+def save_index_and_filenames(filenames_local, preprocessed_texts_local, folder):
+    global index, tfidf_vectorizer, filename_to_id
 
-# Function to save index and filenames
-def save_index_and_filenames(filenames, preprocessed_texts):
-    faiss_index_path = os.path.join(db_directory, 'faiss_index.index')
-    tfidf_matrix_path = os.path.join(db_directory, 'tfidf_matrix.pkl')
-    tfidf_vectorizer_path = os.path.join(db_directory, 'tfidf_vectorizer.pkl')
-    filenames_path = os.path.join(db_directory, 'filenames.pkl')
-    preprocessed_texts_path = os.path.join(db_directory, 'preprocessed_texts.pkl')
+    # Hedef klasörün adını güvenli bir şekilde alın
+    folder_name = os.path.basename(os.path.normpath(folder))
+    # İndeks dosyalarını saklamak için klasör oluşturun
+    db_directory = INDEX_BASE_DIR / folder_name
+    db_directory.mkdir(parents=True, exist_ok=True)
+
+    # FAISS indeks yolunu ayarlayın
+    faiss_index_path = db_directory / 'faiss_index.index'
+    print(f"FAISS indeks dosyası yolu: {faiss_index_path}")
 
     # FAISS indeksini kaydet
-    faiss.write_index(index, faiss_index_path)
+    faiss.write_index(index, str(faiss_index_path))
 
     # Diğer verileri kaydet
-    with open(filenames_path, 'wb') as f:
-        pickle.dump(filenames, f)
-    with open(tfidf_matrix_path, 'wb') as f:
-        pickle.dump(tfidf_matrix, f)
-    with open(tfidf_vectorizer_path, 'wb') as f:
+    with open(db_directory / 'folder_path.txt', 'w', encoding='utf-8') as f:
+        f.write(folder)
+    print("Orijinal klasör yolu kaydedildi.")
+    with open(db_directory / 'filenames.pkl', 'wb') as f:
+        pickle.dump(filenames_local, f)
+    with open(db_directory / 'filename_to_id.pkl', 'wb') as f:
+        pickle.dump(filename_to_id, f)
+    with open(db_directory / 'preprocessed_texts.pkl', 'wb') as f:
+        pickle.dump(preprocessed_texts_local, f)
+    with open(db_directory / 'tfidf_vectorizer.pkl', 'wb') as f:
         pickle.dump(tfidf_vectorizer, f)
-    with open(preprocessed_texts_path, 'wb') as f:
-        pickle.dump(preprocessed_texts, f)
-    print("FAISS index, TF-IDF matrix, vectorizer, preprocessed texts, and filenames saved.")
 
-    # Dosya boyutlarını al ve konsola yazdır
-    faiss_index_size = os.path.getsize(faiss_index_path)
-    tfidf_matrix_size = os.path.getsize(tfidf_matrix_path)
-    total_size = faiss_index_size + tfidf_matrix_size
-
-    print(f"FAISS indeksinin boyutu: {get_readable_file_size(faiss_index_size)}")
-    print(f"TF-IDF matrisinin boyutu: {get_readable_file_size(tfidf_matrix_size)}")
-    print(f"Toplam veri tabanı boyutu: {get_readable_file_size(total_size)}")
+    print("FAISS index ve diğer veriler kaydedildi.")
 
 
-# Function to load index and filenames
-def load_index_and_filenames():
-    global index, tfidf_vectorizer, tfidf_matrix, filenames, preprocessed_texts
-    faiss_index_path = os.path.join(db_directory, 'faiss_index.index')
-    filenames_path = os.path.join(db_directory, 'filenames.pkl')
-    tfidf_matrix_path = os.path.join(db_directory, 'tfidf_matrix.pkl')
-    tfidf_vectorizer_path = os.path.join(db_directory, 'tfidf_vectorizer.pkl')
-    preprocessed_texts_path = os.path.join(db_directory, 'preprocessed_texts.pkl')
-    if all(os.path.exists(path) for path in [faiss_index_path, filenames_path, tfidf_matrix_path, tfidf_vectorizer_path, preprocessed_texts_path]):
-        index = faiss.read_index(faiss_index_path)
-        with open(filenames_path, 'rb') as f:
-            filenames = pickle.load(f)
-        with open(tfidf_matrix_path, 'rb') as f:
-            tfidf_matrix = pickle.load(f)
-        with open(tfidf_vectorizer_path, 'rb') as f:
-            tfidf_vectorizer = pickle.load(f)
-        with open(preprocessed_texts_path, 'rb') as f:
-            preprocessed_texts = pickle.load(f)
-        print("FAISS index, TF-IDF vectorizer, TF-IDF matrix, preprocessed texts, and filenames loaded.")
-        return True
-    else:
-        index = faiss.IndexFlatIP(dimension)
-        return False
+# İndeksi ve dosya isimlerini yükleme fonksiyonu
+def load_index_and_filenames(folder):
+    global index, tfidf_vectorizer, filenames, preprocessed_texts, filename_to_id
 
-# Function to check and process new files
-def check_and_process_new_files():
-    global filenames, preprocessed_texts, tfidf_matrix
-    remove_deleted_files()
-    # Get current files in the samples_folder
+    # Hedef klasörün adını güvenli bir şekilde alın
+    folder_name = os.path.basename(os.path.normpath(folder))
+    # İndeks dosyalarının saklandığı dizini belirleyin
+    db_directory = INDEX_BASE_DIR / folder_name
+
+    faiss_index_path = db_directory / 'faiss_index.index'
+    filenames_path = db_directory / 'filenames.pkl'
+    filename_to_id_path = db_directory / 'filename_to_id.pkl'
+    preprocessed_texts_path = db_directory / 'preprocessed_texts.pkl'
+    tfidf_vectorizer_path = db_directory / 'tfidf_vectorizer.pkl'
+
+    try:
+        if all(path.exists() for path in [faiss_index_path, filenames_path, filename_to_id_path, preprocessed_texts_path, tfidf_vectorizer_path]):
+            # FAISS indeksini yükleyin
+            index = faiss.read_index(str(faiss_index_path))
+            print(f"FAISS indeks dosyası yüklendi: {faiss_index_path}")
+
+            # Dosya isimlerini yükleyin
+            with open(filenames_path, 'rb') as f:
+                loaded_filenames = pickle.load(f)
+                filenames.clear()
+                filenames.extend(loaded_filenames)
+
+            # filename_to_id'yi yükleyin
+            with open(filename_to_id_path, 'rb') as f:
+                loaded_filename_to_id = pickle.load(f)
+                filename_to_id.clear()
+                filename_to_id.update(loaded_filename_to_id)
+
+            # Preprocessed metinleri yükleyin
+            with open(preprocessed_texts_path, 'rb') as f:
+                loaded_preprocessed_texts = pickle.load(f)
+                preprocessed_texts.clear()
+                preprocessed_texts.extend(loaded_preprocessed_texts)
+
+            # TF-IDF vektörleştiriciyi yükleyin
+            with open(tfidf_vectorizer_path, 'rb') as f:
+                loaded_tfidf_vectorizer = pickle.load(f)
+                tfidf_vectorizer = loaded_tfidf_vectorizer
+
+            print("Tüm veriler başarıyla yüklendi.")
+            return False  # İndeksleme yapılmadı, mevcut veri yüklendi
+        else:
+            print("Gerekli dosyalar bulunamadı, indeksleme yapılacak.")
+            contents, filenames_local = get_file_contents(folder)
+            preprocessed_texts_local = contents
+            filenames.clear()
+            filenames.extend(filenames_local)
+            preprocessed_texts.clear()
+            preprocessed_texts.extend(preprocessed_texts_local)
+            tfidf_matrix = vectorize_and_index_content(contents)
+            save_index_and_filenames(filenames, preprocessed_texts_local, folder)
+            return True  # İndeksleme yapıldı
+    except Exception as e:
+        print(f"Veriler yüklenirken bir hata oluştu: {e}")
+        raise
+# Yeniden Tara fonksiyonu
+def rescan_folder(folder):
+    global index, tfidf_vectorizer, filenames, preprocessed_texts, filename_to_id
+
+    # Hedef klasörün adını güvenli bir şekilde alalım
+    folder_name = os.path.basename(os.path.normpath(folder))
+    # İndeks dosyalarının saklandığı dizini belirleyin
+    db_directory = INDEX_BASE_DIR / folder_name
+
+    print("Klasör yeniden taranıyor...")
+
+    # Mevcut dosyaları listele
     current_files = set()
-    for root, dirs, files in os.walk(samples_folder):
+    for root, dirs, files in os.walk(folder):
+        # İndeks dizinini atlayın
+        dirs[:] = [d for d in dirs if os.path.join(root, d) != str(db_directory)]
         for file in files:
-            current_files.add(file)
-    print(f"Güncellenmiş filenames listesi: {filenames}")
-    # Find new files
-    new_files = current_files - set(filenames)
-    if new_files:
-        new_files_content = []
-        new_files_names = []
-        for file in new_files:
-            file_path = os.path.join(samples_folder, file)
-            print(f"Yeni dosya işleniyor: {file_path}")
+            current_files.add(os.path.relpath(os.path.join(root, file), folder))
+
+    # Silinen dosyaları belirle
+    deleted_files = set(filenames) - current_files
+    # Eklenen dosyaları belirle
+    added_files = current_files - set(filenames)
+
+    print(f"Silinen dosyalar: {deleted_files}")
+    print(f"Eklenen dosyalar: {added_files}")
+
+    # Silinen dosyaları indeksden çıkar
+    if deleted_files:
+        ids_to_remove = []
+        for file in deleted_files:
+            try:
+                faiss_id = filename_to_id[file]
+                ids_to_remove.append(faiss_id)
+                print(f"Silinen dosya: {file}, ID: {faiss_id}")
+            except KeyError:
+                print(f"Dosya ID'si bulunamadı: {file}")
+
+        if ids_to_remove:
+            # FAISS indeksinden sil
+            faiss_ids = np.array(ids_to_remove).astype('int64')
+            index.remove_ids(faiss.IDSelectorBatch(faiss_ids))
+            print(f"{len(ids_to_remove)} dosya FAISS indeksinden kaldırıldı.")
+
+        # `filenames`, `preprocessed_texts`, ve `filename_to_id` listelerinden silinen dosyaları kaldır
+        filenames = [f for f in filenames if f not in deleted_files]
+        preprocessed_texts = [t for f, t in zip(filenames, preprocessed_texts) if f not in deleted_files]
+        for file in deleted_files:
+            filename_to_id.pop(file, None)
+
+    # Eklenen dosyaları işle ve indekse ekle
+    if added_files:
+        new_contents = []
+        new_filenames = []
+        for file in added_files:
+            file_path = os.path.join(folder, file)
             content_raw = ""
-            if file.endswith('.txt'):
+            if file.lower().endswith('.txt'):
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         content_raw = f.read()
                         print(f"Metin dosyası okundu: {file_path}")
                 except Exception as e:
                     print(f"Metin dosyası okunamadı: {file_path}, hata: {e}")
-            elif file.endswith('.pdf'):
+                    continue
+            elif file.lower().endswith('.pdf'):
                 content_raw = read_pdf(file_path)
-            elif file.endswith(('.docx', '.doc')):
+                print(f"PDF dosyası okundu: {file_path}")
+            elif file.lower().endswith(('.docx', '.doc')):
                 content_raw = read_word(file_path)
-            elif file.endswith(('.xlsx', '.xls')):
+                print(f"Word dosyası okundu: {file_path}")
+            elif file.lower().endswith(('.xlsx', '.xls')):
                 content_raw = read_excel(file_path)
-            elif file.endswith(('.pptx', '.ppt')):
+                print(f"Excel dosyası okundu: {file_path}")
+            elif file.lower().endswith(('.pptx', '.ppt')):
                 content_raw = read_powerpoint(file_path)
+                print(f"PowerPoint dosyası okundu: {file_path}")
             else:
                 print(f"Desteklenmeyen dosya türü: {file_path}")
                 continue  # Desteklenmeyen dosyaları atla
+
             # Metin ön işlemesi
             content = preprocess_text(content_raw)
             if content:
-                new_files_content.append(content)
-                new_files_names.append(file)
-        # Combine with existing data
-        all_contents = preprocessed_texts + new_files_content
-        all_filenames = filenames + list(new_files_names)
-        # Re-vectorize and rebuild index
-        tfidf_matrix = vectorize_and_index_content(all_contents)
-        # Update global variables
-        filenames = all_filenames
-        preprocessed_texts = all_contents
-        # Save updated data
-        save_index_and_filenames(filenames, preprocessed_texts)
-    else:
-        print("Yeni dosya bulunamadı.")
+                new_contents.append(content)
+                new_filenames.append(file)
 
-def remove_deleted_files():
-    global filenames, preprocessed_texts, tfidf_matrix
-    # Get current files in the samples_folder
-    current_files = set()
-    for root, dirs, files in os.walk(samples_folder):
-        for file in files:
-            current_files.add(file)
-    # Find deleted files
-    deleted_files = set(filenames) - current_files
-    if deleted_files:
-        print(f"Silinen dosyalar tespit edildi: {deleted_files}")
-        # Indeks ve veri yapılarından silinen dosyaları kaldır
-        indices_to_remove = [idx for idx, filename in enumerate(filenames) if filename in deleted_files]
-        # Indeksleri sıralamaya dikkat edin
-        indices_to_remove.sort()
-        print(f"Silinecek indeksler: {indices_to_remove}")
-        # FAISS indeksinden vektörleri kaldır
-        remove_vectors_from_index(indices_to_remove)
-        # filenames, preprocessed_texts ve tfidf_matrix'ten ilgili verileri kaldır
-        filenames = [filename for idx, filename in enumerate(filenames) if idx not in indices_to_remove]
-        preprocessed_texts = [text for idx, text in enumerate(preprocessed_texts) if idx not in indices_to_remove]
-        # TF-IDF matrisini güncelle
-        tfidf_matrix = delete_rows_csr(tfidf_matrix, indices_to_remove)
-        # Güncellenmiş verileri kaydet
-        save_index_and_filenames(filenames, preprocessed_texts)
-        print("Silinen dosyalar indeksten ve veri yapılarından kaldırıldı.")
-    else:
-        print("Silinen dosya bulunamadı.")
-def remove_vectors_from_index(indices_to_remove):
-    global index
-    # FAISS indeksinde kalan vektörleri al
-    total_vectors = index.ntotal
-    if total_vectors == 0:
-        return
-    remaining_indices = [i for i in range(total_vectors) if i not in indices_to_remove]
-    if remaining_indices:
-        # Kalan vektörleri al
-        remaining_vectors = index.reconstruct_n(0, total_vectors)
-        remaining_vectors = remaining_vectors[remaining_indices]
-        # Yeni bir indeks oluştur ve kalan vektörleri ekle
-        index = faiss.IndexFlatIP(dimension)
-        index.add(remaining_vectors)
-    else:
-        # Tüm vektörler silindiyse yeni boş bir indeks oluştur
-        index = faiss.IndexFlatIP(dimension)
-def delete_rows_csr(mat, indices):
-    if not isinstance(mat, csr_matrix):
-        raise ValueError("Only CSR format is supported")
-    indices = list(sorted(set(indices)))
-    mask = np.ones(mat.shape[0], dtype=bool)
-    mask[indices] = False
-    return mat[mask]
+        if new_contents:
+            # Yeni dosyaları listeye ekle
+            preprocessed_texts.extend(new_contents)
+            filenames.extend(new_filenames)
+
+            # TF-IDF vektörleştirme
+            tfidf_matrix_new = tfidf_vectorizer.transform(new_contents)
+            embeddings_new = tfidf_matrix_new.toarray().astype('float32')
+            faiss.normalize_L2(embeddings_new)
+
+            # Yeni dosyaların FAISS ID'lerini belirle
+            if filename_to_id:
+                max_id = max(filename_to_id.values())
+            else:
+                max_id = -1  # İlk ID 0 olacak şekilde başlat
+            new_ids = np.arange(max_id + 1, max_id + 1 + len(new_filenames)).astype('int64')
+
+            # FAISS indeksine ekle
+            index.add_with_ids(embeddings_new, new_ids)
+            print(f"{len(new_contents)} yeni dosya FAISS indeksine eklendi.")
+
+            # filename_to_id'yi güncelle
+            for filename, id_ in zip(new_filenames, new_ids):
+                filename_to_id[filename] = id_
+
+    # İndeksi ve listeleri kaydet
+    save_index_and_filenames(filenames, preprocessed_texts, folder)
+
+    print("Klasör taraması ve indeks güncellemesi tamamlandı.")
+
+# Sorgu arama fonksiyonu
 def search_query(query, top_k=5):
-    global index, tfidf_vectorizer, tfidf_matrix, filenames
-    print("Processing query...")
+    global index, tfidf_vectorizer, filenames, filename_to_id
+    if index is None or tfidf_vectorizer is None:
+        print("İndeks veya vektörleştirici yüklenmedi.")
+        return [], 0
     # Sorguyu ön işleyin
     query_processed = preprocess_text(query)
-    print(f"Preprocessed query: {query_processed}")
     # Sorgunun TF-IDF vektörünü oluşturun
-    try:
-        query_tfidf = tfidf_vectorizer.transform([query_processed])
-    except NotFittedError:
-        print("TF-IDF vectorizer is not fitted. Please vectorize documents first.")
-        return []
-    # Sorgunun SBERT vektörünü oluşturun
-    query_embedding = model.encode(query_processed, normalize_embeddings=True).astype('float32')
-    query_embedding = np.array([query_embedding])
-    # İndeksin boş olup olmadığını kontrol edin
-    if index.ntotal == 0:
-        print("FAISS index is empty. Please vectorize documents first.")
-        return []
-    # Kullanılacak modeli belirleyin
-    selected_model = select_model(query)
-    print(f"Selected model: {selected_model}")
-    if selected_model == 'tfidf':
-        from tfidf_search import tfidf_search
-        results = tfidf_search(query_tfidf, top_k, tfidf_matrix=tfidf_matrix, filenames=filenames)
-    elif selected_model == 'sbert':
-        from sbert_search import sbert_search
-        results = sbert_search(query_embedding, top_k, index=index, filenames=filenames)
+    query_tfidf = tfidf_vectorizer.transform([query_processed])
+    # Seyrek matrisi yoğun NumPy array'e dönüştürme ve float32 tipine çevirme
+    query_tfidf = query_tfidf.toarray().astype('float32')
+    # Vektörü normalleştirme
+    faiss.normalize_L2(query_tfidf)
+    query_vector = query_tfidf
+    # Arama süresini ölçmek için zamanı başlat
+    start_time = time.time()
+    # FAISS ile arama yapın
+    scores, indices = index.search(query_vector, top_k)
+    # Arama süresini hesapla
+    elapsed_time = time.time() - start_time
+    results = []
+    for idx, score in zip(indices[0], scores[0]):
+        if idx in filename_to_id.values():
+            # Dosya isimlerini ID'ye göre bul
+            filename = next((f for f, id_ in filename_to_id.items() if id_ == idx), None)
+            if filename:
+                results.append((filename, score))
+    return results, elapsed_time
+
+# Manuel belge ekleme fonksiyonu
+def add_manual_documents(file_paths, folder):
+    global filenames, preprocessed_texts, tfidf_matrix, index, filename_to_id, tfidf_vectorizer
+
+    # Hedef klasörün adını güvenli bir şekilde alalım
+    folder_name = os.path.basename(os.path.normpath(folder))
+    # İndeks dosyalarının saklandığı dizini belirleyin
+    db_directory = INDEX_BASE_DIR / folder_name
+
+    new_contents = []
+    new_filenames = []
+    new_ids = []
+
+    for file_path in file_paths:
+        # Dosya yolunu hedef klasöre göre göreceli hale getirin
+        if os.path.commonpath([folder, file_path]) == folder:
+            # Dosya hedef klasörün içindeyse, göreceli yolu kullanın
+            file_rel_path = os.path.relpath(file_path, folder)
+        else:
+            # Dosya hedef klasörün dışındaysa, mutlak yolu kullanın
+            file_rel_path = os.path.abspath(file_path)
+
+        if file_rel_path in filenames:
+            print(f"Dosya zaten mevcut: {file_rel_path}")
+            continue  # Dosya zaten eklenmişse atla
+
+        content_raw = ""
+        if file_path.lower().endswith('.txt'):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content_raw = f.read()
+                    print(f"Metin dosyası okundu: {file_path}")
+            except Exception as e:
+                print(f"Metin dosyası okunamadı: {file_path}, hata: {e}")
+                continue
+        elif file_path.lower().endswith('.pdf'):
+            content_raw = read_pdf(file_path)
+            print(f"PDF dosyası okundu: {file_path}")
+        elif file_path.lower().endswith(('.docx', '.doc')):
+            content_raw = read_word(file_path)
+            print(f"Word dosyası okundu: {file_path}")
+        elif file_path.lower().endswith(('.xlsx', '.xls')):
+            content_raw = read_excel(file_path)
+            print(f"Excel dosyası okundu: {file_path}")
+        elif file_path.lower().endswith(('.pptx', '.ppt')):
+            content_raw = read_powerpoint(file_path)
+            print(f"PowerPoint dosyası okundu: {file_path}")
+        else:
+            print(f"Desteklenmeyen dosya türü: {file_path}")
+            continue  # Desteklenmeyen dosyaları atla
+
+        # Metin ön işlemesi
+        content = preprocess_text(content_raw)
+        if content:
+            new_contents.append(content)
+            new_filenames.append(file_rel_path)
+
+    if new_contents:
+        # Yeni dosyaları listeye ekle
+        preprocessed_texts.extend(new_contents)
+        filenames.extend(new_filenames)
+
+        # TF-IDF vektörleştirme
+        tfidf_matrix_new = tfidf_vectorizer.transform(new_contents)
+        embeddings_new = tfidf_matrix_new.toarray().astype('float32')
+        faiss.normalize_L2(embeddings_new)
+
+        # Yeni dosyaların FAISS ID'lerini belirle
+        if filename_to_id:
+            max_id = max(filename_to_id.values())
+        else:
+            max_id = -1  # İlk ID 0 olacak şekilde başlat
+        new_ids = np.arange(max_id + 1, max_id + 1 + len(new_filenames)).astype('int64')
+
+        # FAISS indeksine ekle
+        index.add_with_ids(embeddings_new, new_ids)
+        print(f"{len(new_contents)} yeni dosya FAISS indeksine eklendi.")
+
+        # filename_to_id'yi güncelle
+        for filename, id_ in zip(new_filenames, new_ids):
+            filename_to_id[filename] = id_
+
+        # İndeksi ve listeleri kaydet
+        save_index_and_filenames(filenames, preprocessed_texts, folder)
+        print("Manuel belgeler eklendi ve indeks güncellendi.")
     else:
-        from combined_search import combined_search
-        from model_selection import get_similarity_weights  # Burada import ediyoruz
-        tfidf_weight, sbert_weight = get_similarity_weights(query)
-        results = combined_search(
-            query_tfidf,
-            query_embedding,
-            tfidf_weight,
-            sbert_weight,
-            top_k,
-            tfidf_matrix=tfidf_matrix,
-            index=index,
-            filenames=filenames
-        )
-    return results
+        print("Yeni eklenen dosya bulunamadı veya desteklenmeyen dosya türleri seçildi.")
+
+def get_filenames():
+    return filenames
+
+def reset_globals():
+    global filenames, filename_to_id, preprocessed_texts, tfidf_vectorizer, tfidf_matrix, index, dimension
+    filenames.clear()
+    filename_to_id.clear()
+    preprocessed_texts.clear()
+    tfidf_vectorizer = None
+    tfidf_matrix = None
+    index = None
+    dimension = None
+def get_scanned_folder():
+    scanned_folders = []
+    if INDEX_BASE_DIR.exists():
+        for folder in INDEX_BASE_DIR.iterdir():
+            if folder.is_dir():
+                folder_name = folder.name
+                folder_path = get_original_folder_path(folder_name)
+                index_size=get_index_size(folder)
+                scanned_folders.append({
+                    'name': folder_name,
+                    'path': folder_path,
+                    'size': index_size
+                })
+    return scanned_folders
+def get_index_size(index_folder):
+    total_size = 0
+    for file in index_folder.glob('*'):
+        if file.is_file():
+            total_size += file.stat().st_size
+    return total_size
+
+def get_original_folder_path(folder_name):
+    folder_index_dir =INDEX_BASE_DIR / folder_name
+    folder_path_file = folder_index_dir / 'folder_path.txt'
+    if folder_path_file.exists():
+        with open(folder_path_file, 'r', encoding = 'utf-8') as f:
+            folder_path = f.read().strip()
+        return folder_path
+    else:
+        return None
+
+
 
