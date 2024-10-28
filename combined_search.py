@@ -5,7 +5,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 def combined_search(query_tfidf, query_embedding, tfidf_weight, sbert_weight, top_k=5, tfidf_matrix=None, index=None, filenames=None):
     if tfidf_matrix is None or index is None or filenames is None:
-        print("Necessary data is not provided.")
+        
         return []
 
     # TF-IDF benzerlik skorları

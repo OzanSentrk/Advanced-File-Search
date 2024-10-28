@@ -2,7 +2,7 @@
 
 def sbert_search(query_embedding, top_k=5, index=None, filenames=None):
     if index is None or filenames is None:
-        print("Index or filenames list is not provided.")
+        
         return []
 
     # FAISS indeksinde benzer vektörleri bul

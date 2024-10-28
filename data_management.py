@@ -28,7 +28,7 @@ INDEX_BASE_DIR = Path.home() / '.afs_indices'
 
 # PDF dosyalarını okuma fonksiyonu
 def read_pdf(file_path):
-    print(f"PDF dosyası okunuyor: {file_path}")
+   
     text = ""
     try:
         with pdfplumber.open(file_path) as pdf:
@@ -42,7 +42,7 @@ def read_pdf(file_path):
 
 # Word dosyalarını okuma fonksiyonu
 def read_word(file_path):
-    print(f"Word dosyası okunuyor: {file_path}")
+   
     text = ""
     try:
         doc = Document(file_path)
@@ -54,7 +54,7 @@ def read_word(file_path):
 
 # Excel dosyalarını okuma fonksiyonu
 def read_excel(file_path):
-    print(f"Excel dosyası okunuyor: {file_path}")
+    
     text = ""
     try:
         xls = pd.ExcelFile(file_path)
@@ -69,7 +69,7 @@ def read_excel(file_path):
 
 # PowerPoint dosyalarını okuma fonksiyonu
 def read_powerpoint(file_path):
-    print(f"PowerPoint dosyası okunuyor: {file_path}")
+    
     text = ""
     try:
         prs = Presentation(file_path)
@@ -91,7 +91,7 @@ def create_faiss_index(dimension):
 
 # Dosyaların içeriğini alma fonksiyonu
 def get_file_contents(folder):
-    print(f"'{folder}' klasörü taranıyor...")
+    
     files_content = []
     filenames_local = []
 
@@ -105,13 +105,13 @@ def get_file_contents(folder):
         dirs[:] = [d for d in dirs if os.path.join(root, d) != str(db_directory)]
         for file in files:
             file_path = os.path.join(root, file)
-            print(f"Dosya işleniyor: {file_path}")
+            
             content_raw = ""
             if file.lower().endswith('.txt'):
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         content_raw = f.read()
-                        print(f"Metin dosyası okundu: {file_path}")
+                        
                 except Exception as e:
                         print(f"Metin dosyası okunamadı: {file_path}, hata: {e}")
             elif file.lower().endswith('.pdf'):
@@ -123,7 +123,7 @@ def get_file_contents(folder):
             elif file.lower().endswith(('.pptx', '.ppt')):
                     content_raw = read_powerpoint(file_path)
             else:
-                    print(f"Desteklenmeyen dosya türü: {file_path}")
+                    
                     continue  # Desteklenmeyen dosyaları atla
                 # Metin ön işlemesi
             content = preprocess_text(content_raw)
@@ -132,19 +132,19 @@ def get_file_contents(folder):
                     # Dosya yolunu hedef klasöre göre göreceli hale getirin
                     file_rel_path = os.path.relpath(file_path, folder)
                     filenames_local.append(file_rel_path)
-    print(f"Taranan dosya sayısı: {len(filenames_local)}")
+    
     return files_content, filenames_local
 
 
 # Vektörleştirme ve indeksleme fonksiyonu
 def vectorize_and_index_content(contents):
     global index, tfidf_vectorizer, tfidf_matrix, dimension, filenames, preprocessed_texts, filename_to_id
-    print("Dosyalar vektörleştiriliyor ve FAISS indeksine ekleniyor (TF-IDF ile)...")
+   
     
     # TF-IDF vektörleştirme
     tfidf_vectorizer = TfidfVectorizer(stop_words=list(turkish_stopwords))
     tfidf_matrix = tfidf_vectorizer.fit_transform(contents)
-    print(f"TF-IDF matrisinin boyutu: {tfidf_matrix.shape}")
+   
     
     # TF-IDF matrisini yoğunlaştırma ve float32 tipine dönüştürme
     tfidf_matrix_dense = tfidf_matrix.toarray().astype('float32')
@@ -170,8 +170,7 @@ def vectorize_and_index_content(contents):
     for filename, id_ in zip(filenames, ids):
         filename_to_id[filename] = id_
     
-    print(f"FAISS indeksindeki toplam vektör sayısı: {index.ntotal}")
-    print("Vektörleştirme tamamlandı ve FAISS indeksine eklendi.")
+   
     
     return tfidf_matrix
 
@@ -187,7 +186,7 @@ def save_index_and_filenames(filenames_local, preprocessed_texts_local, folder):
 
     # FAISS indeks yolunu ayarlayın
     faiss_index_path = db_directory / 'faiss_index.index'
-    print(f"FAISS indeks dosyası yolu: {faiss_index_path}")
+   
 
     # FAISS indeksini kaydet
     faiss.write_index(index, str(faiss_index_path))
@@ -195,7 +194,7 @@ def save_index_and_filenames(filenames_local, preprocessed_texts_local, folder):
     # Diğer verileri kaydet
     with open(db_directory / 'folder_path.txt', 'w', encoding='utf-8') as f:
         f.write(folder)
-    print("Orijinal klasör yolu kaydedildi.")
+    
     with open(db_directory / 'filenames.pkl', 'wb') as f:
         pickle.dump(filenames_local, f)
     with open(db_directory / 'filename_to_id.pkl', 'wb') as f:
@@ -205,7 +204,7 @@ def save_index_and_filenames(filenames_local, preprocessed_texts_local, folder):
     with open(db_directory / 'tfidf_vectorizer.pkl', 'wb') as f:
         pickle.dump(tfidf_vectorizer, f)
 
-    print("FAISS index ve diğer veriler kaydedildi.")
+
 
 
 # İndeksi ve dosya isimlerini yükleme fonksiyonu
@@ -227,7 +226,7 @@ def load_index_and_filenames(folder):
         if all(path.exists() for path in [faiss_index_path, filenames_path, filename_to_id_path, preprocessed_texts_path, tfidf_vectorizer_path]):
             # FAISS indeksini yükleyin
             index = faiss.read_index(str(faiss_index_path))
-            print(f"FAISS indeks dosyası yüklendi: {faiss_index_path}")
+           
 
             # Dosya isimlerini yükleyin
             with open(filenames_path, 'rb') as f:
@@ -252,10 +251,10 @@ def load_index_and_filenames(folder):
                 loaded_tfidf_vectorizer = pickle.load(f)
                 tfidf_vectorizer = loaded_tfidf_vectorizer
 
-            print("Tüm veriler başarıyla yüklendi.")
+          
             return False  # İndeksleme yapılmadı, mevcut veri yüklendi
         else:
-            print("Gerekli dosyalar bulunamadı, indeksleme yapılacak.")
+            
             contents, filenames_local = get_file_contents(folder)
             preprocessed_texts_local = contents
             filenames.clear()
@@ -266,7 +265,7 @@ def load_index_and_filenames(folder):
             save_index_and_filenames(filenames, preprocessed_texts_local, folder)
             return True  # İndeksleme yapıldı
     except Exception as e:
-        print(f"Veriler yüklenirken bir hata oluştu: {e}")
+        
         raise
 # Yeniden Tara fonksiyonu
 def rescan_folder(folder):
@@ -277,7 +276,7 @@ def rescan_folder(folder):
     # İndeks dosyalarının saklandığı dizini belirleyin
     db_directory = INDEX_BASE_DIR / folder_name
 
-    print("Klasör yeniden taranıyor...")
+   
 
     # Mevcut dosyaları listele
     current_files = set()
@@ -292,8 +291,7 @@ def rescan_folder(folder):
     # Eklenen dosyaları belirle
     added_files = current_files - set(filenames)
 
-    print(f"Silinen dosyalar: {deleted_files}")
-    print(f"Eklenen dosyalar: {added_files}")
+   
 
     # Silinen dosyaları indeksden çıkar
     if deleted_files:
@@ -302,7 +300,7 @@ def rescan_folder(folder):
             try:
                 faiss_id = filename_to_id[file]
                 ids_to_remove.append(faiss_id)
-                print(f"Silinen dosya: {file}, ID: {faiss_id}")
+                
             except KeyError:
                 print(f"Dosya ID'si bulunamadı: {file}")
 
@@ -310,7 +308,7 @@ def rescan_folder(folder):
             # FAISS indeksinden sil
             faiss_ids = np.array(ids_to_remove).astype('int64')
             index.remove_ids(faiss.IDSelectorBatch(faiss_ids))
-            print(f"{len(ids_to_remove)} dosya FAISS indeksinden kaldırıldı.")
+            
 
         # `filenames`, `preprocessed_texts`, ve `filename_to_id` listelerinden silinen dosyaları kaldır
         filenames = [f for f in filenames if f not in deleted_files]
@@ -329,24 +327,24 @@ def rescan_folder(folder):
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         content_raw = f.read()
-                        print(f"Metin dosyası okundu: {file_path}")
+                        
                 except Exception as e:
-                    print(f"Metin dosyası okunamadı: {file_path}, hata: {e}")
+                   
                     continue
             elif file.lower().endswith('.pdf'):
                 content_raw = read_pdf(file_path)
-                print(f"PDF dosyası okundu: {file_path}")
+               
             elif file.lower().endswith(('.docx', '.doc')):
                 content_raw = read_word(file_path)
-                print(f"Word dosyası okundu: {file_path}")
+               
             elif file.lower().endswith(('.xlsx', '.xls')):
                 content_raw = read_excel(file_path)
-                print(f"Excel dosyası okundu: {file_path}")
+               
             elif file.lower().endswith(('.pptx', '.ppt')):
                 content_raw = read_powerpoint(file_path)
-                print(f"PowerPoint dosyası okundu: {file_path}")
+                
             else:
-                print(f"Desteklenmeyen dosya türü: {file_path}")
+               
                 continue  # Desteklenmeyen dosyaları atla
 
             # Metin ön işlemesi
@@ -374,7 +372,7 @@ def rescan_folder(folder):
 
             # FAISS indeksine ekle
             index.add_with_ids(embeddings_new, new_ids)
-            print(f"{len(new_contents)} yeni dosya FAISS indeksine eklendi.")
+           
 
             # filename_to_id'yi güncelle
             for filename, id_ in zip(new_filenames, new_ids):
@@ -383,13 +381,13 @@ def rescan_folder(folder):
     # İndeksi ve listeleri kaydet
     save_index_and_filenames(filenames, preprocessed_texts, folder)
 
-    print("Klasör taraması ve indeks güncellemesi tamamlandı.")
+    
 
 # Sorgu arama fonksiyonu
 def search_query(query, top_k=5):
     global index, tfidf_vectorizer, filenames, filename_to_id
     if index is None or tfidf_vectorizer is None:
-        print("İndeks veya vektörleştirici yüklenmedi.")
+        
         return [], 0
     # Sorguyu ön işleyin
     query_processed = preprocess_text(query)
@@ -438,7 +436,7 @@ def add_manual_documents(file_paths, folder):
             file_rel_path = os.path.abspath(file_path)
 
         if file_rel_path in filenames:
-            print(f"Dosya zaten mevcut: {file_rel_path}")
+            
             continue  # Dosya zaten eklenmişse atla
 
         content_raw = ""
@@ -446,24 +444,24 @@ def add_manual_documents(file_paths, folder):
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content_raw = f.read()
-                    print(f"Metin dosyası okundu: {file_path}")
+                    
             except Exception as e:
-                print(f"Metin dosyası okunamadı: {file_path}, hata: {e}")
+                
                 continue
         elif file_path.lower().endswith('.pdf'):
             content_raw = read_pdf(file_path)
-            print(f"PDF dosyası okundu: {file_path}")
+            
         elif file_path.lower().endswith(('.docx', '.doc')):
             content_raw = read_word(file_path)
-            print(f"Word dosyası okundu: {file_path}")
+           
         elif file_path.lower().endswith(('.xlsx', '.xls')):
             content_raw = read_excel(file_path)
-            print(f"Excel dosyası okundu: {file_path}")
+            
         elif file_path.lower().endswith(('.pptx', '.ppt')):
             content_raw = read_powerpoint(file_path)
-            print(f"PowerPoint dosyası okundu: {file_path}")
+            
         else:
-            print(f"Desteklenmeyen dosya türü: {file_path}")
+            
             continue  # Desteklenmeyen dosyaları atla
 
         # Metin ön işlemesi
@@ -491,7 +489,7 @@ def add_manual_documents(file_paths, folder):
 
         # FAISS indeksine ekle
         index.add_with_ids(embeddings_new, new_ids)
-        print(f"{len(new_contents)} yeni dosya FAISS indeksine eklendi.")
+        
 
         # filename_to_id'yi güncelle
         for filename, id_ in zip(new_filenames, new_ids):
@@ -499,9 +497,8 @@ def add_manual_documents(file_paths, folder):
 
         # İndeksi ve listeleri kaydet
         save_index_and_filenames(filenames, preprocessed_texts, folder)
-        print("Manuel belgeler eklendi ve indeks güncellendi.")
-    else:
-        print("Yeni eklenen dosya bulunamadı veya desteklenmeyen dosya türleri seçildi.")
+        
+   
 
 def get_filenames():
     return filenames

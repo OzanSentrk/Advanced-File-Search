@@ -5,7 +5,7 @@ import faiss
 
 def tfidf_search(query_tfidf, index, top_k=5, filenames=None):
     if index is None or filenames is None:
-        print("FAISS index veya dosya isimleri listesi sağlanmadı.")
+        
         return []
     
     # Sorgu vektörünü float32 tipine dönüştürme
