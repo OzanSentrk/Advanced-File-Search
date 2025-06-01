@@ -1,0 +1,19 @@
+#######################
+# Python projeleri
+#######################
+# Sanal ortam
+myenv/
+venv/
+.env/
+
+# Derleme çıktıları
+build/
+dist/
+*.spec
+
+# Büyük paket dosyası (LFS’e gidecek)
+*.pkg
+
+# Byte-compiled dosyalar
+__pycache__/
+*.py[cod]

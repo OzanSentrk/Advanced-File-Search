@@ -3,6 +3,7 @@
 import sys
 import os
 import time
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QPushButton, QVBoxLayout,
     QMessageBox, QListWidget, QHBoxLayout, QLabel, QFileDialog, QLineEdit, QTextEdit, QProgressBar,QListWidgetItem,QSpacerItem
@@ -541,6 +542,7 @@ class SearchApp(QMainWindow):
 class ScannedFoldersWindow(QMainWindow):
     def __init__(self, parent):
         super().__init__(parent)
+        self.setWindowFlags(self.windowFlags() | Qt.Window)
         self.init_ui()
 
     def init_ui(self):
@@ -706,7 +708,7 @@ class MainApp(QMainWindow):
         # Pencere başlığını ve boyutunu ayarlayın
         self.setWindowTitle("Gelişmiş Dosya Arama")
         self.resize(400, 300)
-        self.setWindowIcon(QIcon('C:/VsCode Repo/Advanced File Search/icons/search.png'))
+        self.setWindowIcon(QIcon('C:/VsCode Repo/Advanced File Search/icons/search.ico'))
 
 
     def prompt_folder_selection(self):

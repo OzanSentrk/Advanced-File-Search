@@ -10,6 +10,8 @@ nltk.download('stopwords')
 # Initialize Turkish stopwords
 turkish_stopwords = set(stopwords.words('turkish'))
 
+print(nltk.data.find('corpora/stopwords'))
+
 
 # Paths
 # Update this path to your actual "sample" folder location
